@@ -35,6 +35,12 @@ The 34 old tools outside the certified surface remain unverified and hidden by
 default. `NX_MCP_ENABLE_EXPERIMENTAL=1` registers them through the bridge;
 Journal tools additionally require `NX_MCP_ENABLE_JOURNAL=1`.
 
+Two additional experimental tools support native Part Family tables:
+`nx_get_part_family` discovers the columns and members; `nx_add_part_family_member`
+copies an existing row and applies a dynamic dictionary of column values.
+Both the Python executor and C# GUI bridge implement them. See
+[Part Family tools](docs/part-family.md) for examples, activation and validation limits.
+
 ## Agent modeling workflow
 
 The canonical [NX modeling skill](skills/nx-modeling/SKILL.md) explains discovery,

@@ -74,6 +74,12 @@ class NXOpenExecutor:
             "nx_undo": self._undo,
             "nx_fit_view": self._fit_view,
         }
+        if enable_experimental:
+            from nx_mcp.part_family import PartFamilyService
+
+            family_service = PartFamilyService(self)
+            self._handlers["nx_get_part_family"] = family_service.get
+            self._handlers["nx_add_part_family_member"] = family_service.add
 
     def execute(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         part = self._work_part(required=False)

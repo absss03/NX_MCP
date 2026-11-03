@@ -743,6 +743,9 @@ namespace NxMcp.GuiBridge
             Add("nx_extrude", Extrude, "sketch_id", "distance", Opt("reverse", false));
             Add("nx_undo", Undo);
             Add("nx_fit_view", FitView);
+            Add("nx_get_part_family", GetPartFamily, Opt("part_name", null), Opt("offset", 0), Opt("limit", 100));
+            Add("nx_add_part_family_member", AddPartFamilyMember, "member_name", "values",
+                Opt("part_name", null), Opt("copy_from", "last"), Opt("other_name", null), Opt("save", false));
         }
 
         private static KeyValuePair<string, object> Opt(string name, object defaultValue)
@@ -1084,6 +1087,195 @@ namespace NxMcp.GuiBridge
                 "nx_version", nxVersion,
                 "bridge_protocol", Protocol.Version,
                 "active_part", part != null ? Reference(part, "part", part, "Part") : null);
+        }
+
+        private Part FamilyPart(Dictionary<string, object> values)
+        {
+            Part selected = null;
+            if (values["part_name"] == null) selected = WorkPart(true);
+            else
+            {
+                string name = FamilyName(values["part_name"], "part_name");
+                foreach (Part part in session.Parts)
+                {
+                    if (string.Equals(name, part.Name, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, part.FullPath, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, Path.GetFileName(part.FullPath), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (selected != null) throw Invalid("part_name matches multiple open parts");
+                        selected = part;
+                    }
+                }
+                if (selected == null) throw Invalid("part_name must identify one open part");
+            }
+            workspace.EnsureInside(selected.FullPath);
+            if (unsafeParts.Contains(PartId(selected)))
+                throw new NxToolError("NX_ROLLBACK_FAILED", "The selected part requires recovery");
+            return selected;
+        }
+
+        private static string FamilyName(object value, string field)
+        {
+            string text = value as string;
+            if (string.IsNullOrWhiteSpace(text)) throw Invalid(field + " must be a non-empty name");
+            foreach (char c in text) if (c < 32) throw Invalid(field + " contains control characters");
+            return text;
+        }
+
+        private static NXOpen.PartFamily.Template FamilyTemplate(NXOpen.PartFamily.TemplateManager manager)
+        {
+            var template = manager.GetPartFamilyTemplate();
+            if (template == null) throw new NxToolError("NX_NO_PART_FAMILY", "The selected part has no Part Family");
+            return template;
+        }
+
+        private static NXOpen.PartFamily.FamilyAttribute[] FamilyAttributes(NXOpen.PartFamily.TemplateManager manager)
+        {
+            var attributes = manager.GetChosenAttributes();
+            var names = new HashSet<string>();
+            foreach (var attribute in attributes)
+                if (!names.Add(attribute.Name))
+                    throw new NxToolError("NX_AMBIGUOUS_COLUMNS", "Family contains duplicate column names");
+            return attributes;
+        }
+
+        private static bool FamilyIdentity(NXOpen.PartFamily.FamilyAttribute attribute)
+        {
+            return attribute.Name == "OS_PART_NAME" || attribute.Name == "DB_PART_NO" ||
+                attribute.Name == "DB_PART_NAME" || attribute.Type == NXOpen.PartFamily.FamilyAttribute.AttrType.Name;
+        }
+
+        private static Dictionary<string, object> FamilyRow(NXOpen.PartFamily.TemplateManager manager,
+            NXOpen.PartFamily.FamilyAttribute[] attributes, string name, int index)
+        {
+            var definition = manager.GetInstanceDefinition(name);
+            var fields = new Dictionary<string, object>();
+            foreach (var attribute in attributes) fields[attribute.Name] = definition.GetValueOfAttribute(attribute);
+            return Result("row", index + 1, "member_name", name, "values", fields);
+        }
+
+        private Dictionary<string, object> GetPartFamily(Dictionary<string, object> values)
+        {
+            double offsetNumber = Number(values["offset"]), limitNumber = Number(values["limit"]);
+            if (offsetNumber < 0 || offsetNumber > int.MaxValue || offsetNumber != Math.Floor(offsetNumber) ||
+                limitNumber < 1 || limitNumber > 200 || limitNumber != Math.Floor(limitNumber))
+                throw Invalid("offset >= 0 and limit between 1 and 200 required");
+            int offset = (int)offsetNumber, limit = (int)limitNumber;
+            Part part = FamilyPart(values);
+            var manager = part.NewPartFamilyTemplateManager();
+            var template = FamilyTemplate(manager);
+            var attributes = FamilyAttributes(manager);
+            string[] members;
+            template.GetMembers(out members);
+            var columns = new List<object>();
+            foreach (var attribute in attributes)
+                columns.Add(Result("name", attribute.Name, "type", attribute.Type.ToString()));
+            var rows = new List<object>();
+            for (int index = offset; index < members.Length && index - offset < limit; index++)
+                rows.Add(FamilyRow(manager, attributes, members[index], index));
+            return Result("part_name", part.Name, "part_path", part.FullPath, "importable", manager.Importable,
+                "member_count", members.Length, "columns", columns, "members", rows, "offset", offset,
+                "next_offset", offset < members.Length - limit ? (object)(offset + limit) : null,
+                "message", "Part Family read; values are NX strings, including expressions.");
+        }
+
+        private Dictionary<string, object> AddPartFamilyMember(Dictionary<string, object> values)
+        {
+            string name = FamilyName(values["member_name"], "member_name");
+            string copy = FamilyName(values["copy_from"], "copy_from");
+            string other = values["other_name"] == null ? name : FamilyName(values["other_name"], "other_name");
+            var overrides = values["values"] as Dictionary<string, object>;
+            if (overrides == null) throw Invalid("values must be an object");
+            if (!(values["save"] is bool)) throw Invalid("save must be boolean");
+            Part part = FamilyPart(values);
+            var manager = part.NewPartFamilyTemplateManager();
+            var template = FamilyTemplate(manager);
+            var attributes = FamilyAttributes(manager);
+            string[] members;
+            template.GetMembers(out members);
+            if (members.Length == 0) throw new NxToolError("NX_EMPTY_PART_FAMILY", "No existing member is available to copy");
+            foreach (string member in members)
+                if (string.Equals(name, member, StringComparison.OrdinalIgnoreCase))
+                    throw new NxToolError("NX_DUPLICATE_MEMBER", "Member name already exists");
+            if (!template.IsValidMemberName(name)) throw Invalid("NX rejected the member name");
+            string sourceName = copy == "last" ? members[members.Length - 1] : copy;
+            if (Array.IndexOf(members, sourceName) < 0) throw Invalid("copy_from must be 'last' or an existing member name");
+            var byName = new Dictionary<string, NXOpen.PartFamily.FamilyAttribute>();
+            foreach (var attribute in attributes) byName[attribute.Name] = attribute;
+            var textValues = new Dictionary<string, string>();
+            foreach (var entry in overrides)
+            {
+                NXOpen.PartFamily.FamilyAttribute attribute;
+                if (!byName.TryGetValue(entry.Key, out attribute))
+                    throw new NxToolError("NX_UNKNOWN_COLUMN", "Unknown Part Family column: " + entry.Key);
+                if (FamilyIdentity(attribute)) throw Invalid("Use member_name/other_name for identity columns");
+                string text = entry.Value as string;
+                if (text != null) { if (text.IndexOf('\0') >= 0) throw Invalid("Family values cannot contain NUL"); }
+                else if (entry.Value is bool) text = (bool)entry.Value ? "1" : "0";
+                else { Number(entry.Value); text = FormatNumber(entry.Value); }
+                string kind = attribute.Type.ToString();
+                if (kind == "Integer" || kind == "Numeric" || kind == "Double" || kind == "Density" || kind == "Mass")
+                {
+                    double number;
+                    if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number) ||
+                        double.IsNaN(number) || double.IsInfinity(number) || (kind == "Integer" && number != Math.Floor(number)))
+                        throw Invalid("Invalid " + kind + " value for " + entry.Key);
+                }
+                textValues[entry.Key] = text;
+            }
+            if (manager.Importable)
+                foreach (string member in members)
+                    foreach (var attribute in attributes)
+                        if ((attribute.Name == "DB_PART_NO" || attribute.Name == "DB_PART_NAME") &&
+                            string.Equals(manager.GetInstanceDefinition(member).GetValueOfAttribute(attribute), other,
+                                StringComparison.OrdinalIgnoreCase))
+                            throw new NxToolError("NX_DUPLICATE_MEMBER", "other_name already exists");
+            var source = manager.GetInstanceDefinition(sourceName);
+            var copied = new Dictionary<string, string>();
+            foreach (var attribute in attributes) copied[attribute.Name] = source.GetValueOfAttribute(attribute);
+            var mark = session.SetUndoMark(Session.MarkVisibility.Visible, "NX MCP: nx_add_part_family_member");
+            Dictionary<string, object> row;
+            try
+            {
+                var created = manager.AddInstanceDefinition(name, source, manager.Importable ? other : "");
+                foreach (var attribute in attributes)
+                {
+                    if (FamilyIdentity(attribute)) continue;
+                    string text;
+                    created.SetValueOfAttribute(attribute, textValues.TryGetValue(attribute.Name, out text) ? text : copied[attribute.Name]);
+                }
+                manager.SavePartFamily();
+                template.GetMembers(out members);
+                int index = Array.IndexOf(members, name);
+                if (index < 0) throw new NxToolError("NX_OPERATION_FAILED", "NX did not retain the new family member");
+                row = FamilyRow(manager, attributes, name, index);
+                foreach (var entry in textValues)
+                    if ((string)((Dictionary<string, object>)row["values"])[entry.Key] != entry.Value)
+                        throw new NxToolError("NX_OPERATION_FAILED", "NX did not retain the value for " + entry.Key);
+            }
+            catch (Exception error) { Rollback(mark, error, PartId(part)); throw; }
+            bool isWorkPart = part == WorkPart(false);
+            if (isWorkPart) undoMarks.Add(mark);
+            bool saved = false;
+            if ((bool)values["save"])
+            {
+                PartSaveStatus status = null;
+                try
+                {
+                    status = part.Save(BasePart.SaveComponents.False, BasePart.CloseAfterSave.False);
+                    if (status != null && status.NumberUnsavedParts != 0) throw new Exception("NX reported unsaved parts");
+                    saved = true;
+                }
+                catch (Exception error)
+                {
+                    throw new NxToolError("NX_FAMILY_SAVE_FAILED", "Member added in session but saving failed", null, null, false,
+                        Result("member", row, "part_path", part.FullPath, "saved", false, "save_error", error.Message));
+                }
+                finally { if (status != null) status.Dispose(); }
+                if (isWorkPart) undoMarks.Clear();
+            }
+            return Result("part_name", part.Name, "part_path", part.FullPath, "member", row, "copied_from", sourceName,
+                "saved", saved, "generated", false, "message", "Added family table entry; no member .prt was generated.");
         }
 
         private Dictionary<string, object> ListObjects(string kind)

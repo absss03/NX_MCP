@@ -195,6 +195,9 @@ def create_certified_server(
 
     if enable_experimental:
         from nx_mcp.experimental import add_experimental_tools
+        from nx_mcp.part_family_tools import add_part_family_tools
+
+        add_part_family_tools(mcp, call)
 
         add_experimental_tools(
             mcp,
