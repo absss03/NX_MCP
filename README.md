@@ -91,6 +91,39 @@ client AppData isolation.
 
 #### Option B — Python batch bridge
 
+**Desde NX, sin consola:** abre **Herramientas → Journal → Reproducir**,
+selecciona `examples/start_nx_bridge.py` y pulsa **Reproducir**. No hace falta
+ejecutar `run_journal.exe` ni definir variables desde PowerShell.
+
+Por defecto, usa `%USERPROFILE%\NX_MCP_WORKSPACE` para las piezas y
+`%USERPROFILE%\.nx-mcp` para el descriptor. La ventana de información de NX
+muestra las rutas efectivas. Configura el cliente MCP con esos mismos valores.
+Para usar otras carpetas, crea `examples/python-bridge.json` una sola vez:
+
+```json
+{
+  "workspace": "C:\\NX_MCP_WORKSPACE",
+  "state_dir": "C:\\Users\\<you>\\.nx-mcp"
+}
+```
+
+Las variables `NX_MCP_WORKSPACE`, `NX_MCP_STATE_DIR` y
+`NX_MCP_BRIDGE_STOP_FILE`, si existen, tienen prioridad sobre el JSON.
+El journal habilita explícitamente el bridge Python y mantiene las llamadas
+NXOpen en su hilo principal. **NX permanece ocupado mientras corre el journal**;
+este cambio no convierte el bridge Python en un servicio de fondo.
+
+Para detenerlo sin consola, ejecuta `examples/stop_nx_bridge.py` desde el
+Explorador con Python (doble clic si `.py` está asociado a Python). No lo
+reproduzcas como segundo journal dentro de NX mientras el primero está activo.
+También puedes crear el archivo `python-bridge.stop` en el directorio de estado.
+Si usas variables de entorno distintas entre NX y el Python externo, usa la ruta
+de parada que muestra NX; ambos scripts deben resolver la misma configuración.
+La parada se procesa al terminar la llamada NXOpen en curso.
+
+El arranque directo desde la interfaz de NX2312 aún requiere validación real.
+El runner externo sigue disponible para automatizaciones batch:
+
 In a dedicated PowerShell terminal, set the bridge environment and run the
 bundled journal through NX's journal runner:
 
