@@ -1,0 +1,11 @@
+{
+    "python.autoComplete.extraPaths": [
+        "C:\\Program Files\\Siemens\\NX2312\\NXBIN\\python"
+    ],
+    "python.analysis.extraPaths": [
+        "C:\\Program Files\\Siemens\\NX2312\\NXBIN\\python"
+    ],
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.stubPath": "C:\\Program Files\\Siemens\\NX2312\\UGOPEN\\pythonStubs",
+    "python.terminal.useEnvFile": true
+}

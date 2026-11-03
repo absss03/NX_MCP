@@ -27,6 +27,7 @@ dev = [
 [project.scripts]
 nx-mcp = "nx_mcp.server:main"
 nx-mcp-smoke = "nx_mcp.real_smoke:main"
+nx-part-family-import = "nx_mcp.part_family_importer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
