@@ -32,7 +32,9 @@ is the case [architecture](architecture.md) reserves for a minimal C# plugin.
     including the temporary directory whose file becomes the destination only
     after the translator wrote a non-empty STEP.
 
-  Legacy and experimental commands are not available.
+  The two opt-in native Part Family commands are also implemented; see
+  [Part Family tools](part-family.md). Other legacy and experimental commands
+  are not available in this bridge.
 - The NX status bar shows `NX MCP: <command>` while a call runs.
 
 ## Build

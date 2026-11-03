@@ -94,3 +94,42 @@ identities, workspace confinement, invalid values, rollback and save failure.
 The full C# DLL compiles against the installed NX2312 assemblies. These checks
 are not real-NX acceptance of the new commands; validate them on a disposable
 family template before production use.
+
+## External batch import from Excel / DataFrame
+
+You can batch import rows into an open Part Family from outside NX using the
+importer module ([`src/nx_mcp/part_family_importer.py`](file:///c:/Users/cabarbieri/Documents/NX_MCP/src/nx_mcp/part_family_importer.py)):
+
+### CLI usage
+
+```powershell
+python -m nx_mcp.part_family_importer --file tornillos.xlsx --part tornillo.prt --save
+# or with the console entry point:
+nx-part-family-import -f tornillos.csv --save --dry-run
+```
+
+Options:
+- `-f, --file`: Path to `.xlsx`, `.xls` or `.csv`.
+- `-p, --part`: Name or path of the open part (defaults to NX work part).
+- `-s, --sheet`: Sheet name or index for Excel.
+- `-m, --member-col`: Column name for `member_name` (auto-detected if omitted).
+- `-o, --other-col`: Column name for `other_name` / `DB_PART_NO` (optional).
+- `-c, --copy-from`: Source member to copy base values from (defaults to `last`).
+- `--save`: Save template part in NX after import completes.
+- `--dry-run`: Validate columns and preview rows without altering NX.
+- `--no-skip-existing`: Stop with error instead of skipping existing members.
+
+### Python API
+
+```python
+import pandas as pd
+from nx_mcp.part_family_importer import import_part_family_from_dataframe
+
+df = pd.DataFrame({
+    "member_name": ["M12x50", "M12x60"],
+    "SCREW_LENGTH": [50, 60],
+})
+
+result = import_part_family_from_dataframe(df, copy_from="last", save=True)
+print(f"Added {len(result.added)} members; Saved: {result.saved}")
+```
