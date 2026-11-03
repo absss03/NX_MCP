@@ -53,7 +53,9 @@ class StatusResult(BaseModel):
     connected: bool
     nx_version: str
     bridge_protocol: int
+    bridge_implementation: Literal["python_batch", "csharp_gui", "unknown"] = "unknown"
     active_part: ObjectRef | None = None
+    units: Literal["mm", "inch"] | None = None
 
 
 class PartResult(BaseModel):

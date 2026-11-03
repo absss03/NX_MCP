@@ -26,6 +26,29 @@ the protocol version, host, port, random token, NX PID, and exact NX version.
 The sidecar reloads the descriptor for every call, so restarting NX does not
 leave a permanently disconnected singleton.
 
+Both bridges claim that descriptor through one ownership protocol, so two NX
+processes sharing a state directory cannot both own it. A starting bridge holds
+an exclusive lock on `bridge.lock` beside the descriptor for the whole
+check-then-publish sequence, and for the token check its own shutdown makes
+before deleting. It refuses to start when the descriptor's port still answers
+as a bridge: the probe carries a deliberately invalid token, which either
+bridge rejects on its socket thread without waiting for NX. Nothing listening,
+a closed connection, or a reply that is not a bridge response proves the port
+belongs to something else; silence does not, because a bridge busy with a call
+answers late. Each writer publishes through a temporary of its own, named after
+its process, and removes only that one.
+
+The two implementations enforce that protocol with different mechanisms, and
+they are not equivalent in what they protect. The C# add-in takes the lock by
+opening `bridge.lock` with `FileShare.None` and writes the descriptor with a
+Windows ACL that allows the current user alone. The Python bridge locks a byte
+range with `msvcrt.locking` or `fcntl.flock`, because its sidecar is also
+tested on Linux and macOS, and protects the descriptor with file mode `0600`,
+which grants nothing on Windows: there the file inherits the state directory's
+rules, so that directory is what has to be chosen carefully. The two still
+serialize against each other, because each waits out the other's way of holding
+the lock.
+
 Requests are newline-delimited JSON-RPC objects containing `protocol_version`,
 `id`, `token`, `method`, and `params`. Responses echo the ID and contain either
 `result` or a stable error with `code`, `message`, optional `suggestion`, and
@@ -53,7 +76,11 @@ reject unknown, stale, or wrong-kind IDs instead of guessing by display name.
 Model mutations are serialized. Each mutation creates a visible undo mark and
 rolls back to it when execution fails. Successful marks are tracked so
 `nx_undo` affects the last NX MCP mutation rather than an unrelated user
-operation; saving clears MCP's tracked undo history. Undo records are removed
+operation; successful saving clears MCP's tracked undo history. A save status
+reporting unsaved parts or objects fails with `NX_API_ERROR` and the first native
+error code. The part stays open and its tracked undo history is preserved,
+including when saving was requested by `nx_close_part(save=True)`.
+Undo records are removed
 only after native undo succeeds; switching work parts clears tracked history. Builders are destroyed from
 `finally` blocks. File operations are independently confined to the configured
 workspace on both sides of the process boundary. Save also validates the
@@ -70,6 +97,20 @@ and reopen the disposable part, or restart the bridge, to leave this blocked
 state; restarting does not itself repair uncertain model contents.
 
 ## Certification boundary
+
+`nx_status.units` is additive to protocol v1: `mm` or `inch` comes from the
+current work part's `BasePart.PartUnits`, not display settings or the creation
+request. Without a work part it is `null`; the sidecar also defaults a missing
+older-bridge field to `null`. An unrecognized native unit raises
+`NX_UNSUPPORTED_UNITS`. Inputs for sketch coordinates and extrusion distance
+remain in native part units. The [inspection contract](inspection-contract.md)
+records this implemented unit contract and proposals for future measurements.
+
+Every certified MCP tool declares `readOnlyHint` and `destructiveHint`.
+Status and object lists are read-only. Save, close, STEP export and undo are
+marked potentially destructive because they can replace files, discard work
+or remove model contents. View fitting changes UI state, so is not read-only.
+Annotations are client hints and do not alter validation, undo or permissions.
 
 `server.py` explicitly registers the 16 certified tools. Legacy modules under
 `tools/` are imported only when `NX_MCP_ENABLE_EXPERIMENTAL=1` is set on both

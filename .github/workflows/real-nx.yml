@@ -24,6 +24,9 @@ jobs:
     env:
       NX_MCP_ALLOW_UNVERIFIED_PYTHON_BRIDGE: "1"
       NX_MCP_REAL_NX: "1"
+      NX_MCP_EXPECTED_BRIDGE: "python_batch"
+      # Provenance of the actual probe invocation below, not configurable launch arguments.
+      NX_MCP_RUN_JOURNAL_SWITCHES: "[]"
       NX_MCP_REAL_NX_ITERATIONS: ${{ inputs.iterations }}
       NX_MCP_REAL_NX_RUN_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -69,7 +72,7 @@ jobs:
       - name: Verify NX embedded runtime
         shell: pwsh
         run: |
-          & $env:NX_RUN_JOURNAL -nx (Join-Path $PWD 'examples\nx_runtime_probe.py')
+          & $env:NX_RUN_JOURNAL (Join-Path $PWD 'examples\nx_runtime_probe.py')
           if ($LASTEXITCODE -ne 0) {
             throw "NX runtime probe failed with exit code $LASTEXITCODE."
           }
@@ -84,7 +87,6 @@ jobs:
           $startedAt = [DateTime]::UtcNow
           $bridgeScript = Join-Path $PWD 'examples\start_nx_bridge.py'
           $bridgeProcess = Start-Process -FilePath $env:NX_RUN_JOURNAL -ArgumentList @(
-            '-nx',
             "`"$bridgeScript`""
           ) -PassThru -WindowStyle Hidden
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "NX_MCP_BRIDGE_PID=$($bridgeProcess.Id)"
@@ -107,6 +109,13 @@ jobs:
       - name: Run real NX acceptance test
         shell: pwsh
         run: python -m pytest -q -p no:cacheprovider -m real_nx tests/test_real_nx.py --junitxml="$env:NX_MCP_WORKSPACE/acceptance.xml"
+      - name: Record versioned evidence from the live bridge
+        shell: pwsh
+        run: >-
+          python -m nx_mcp.evidence
+          --probe "$env:NX_MCP_PROBE_OUTPUT"
+          --output "$env:NX_MCP_WORKSPACE/evidence.json"
+          --bridge python_batch
       - name: Stop NX bridge
         if: always()
         shell: pwsh
@@ -126,7 +135,21 @@ jobs:
 
       - name: Verify reconnection with separately owned NX processes
         shell: pwsh
-        run: python -m pytest -q -p no:cacheprovider -m real_nx tests/test_real_nx_restart.py --junitxml="$env:NX_MCP_WORKSPACE/restart.xml"
+        run: python -m pytest -q -p no:cacheprovider -m real_nx tests/test_real_nx_restart.py::test_real_nx_client_reconnects_after_restart --junitxml="$env:NX_MCP_WORKSPACE/restart.xml"
+
+      - name: Validate exported STEP geometry in an isolated environment
+        shell: pwsh
+        run: |
+          $stepEnv = Join-Path $env:RUNNER_TEMP "nx-mcp-step-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          python -m venv $stepEnv
+          if ($LASTEXITCODE -ne 0) { throw "STEP checker environment creation failed." }
+          $stepPython = Join-Path $stepEnv 'Scripts/python.exe'
+          & $stepPython -m pip install "cadquery-ocp==7.9.3.1.1"
+          if ($LASTEXITCODE -ne 0) { throw "STEP checker dependency installation failed." }
+          $inputStep = "$env:NX_MCP_REAL_NX_RUN_PREFIX/run-01.stp"
+          & $stepPython examples/validate_step_geometry.py --workspace $env:NX_MCP_WORKSPACE --input $inputStep --output-dir step-check
+          if ($LASTEXITCODE -ne 0) { throw "Independent STEP geometry check failed." }
+
       - name: Upload allowlisted acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -134,7 +157,9 @@ jobs:
           name: real-nx-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.NX_MCP_WORKSPACE }}/nx-runtime-probe.json
+            ${{ env.NX_MCP_WORKSPACE }}/evidence.json
             ${{ env.NX_MCP_WORKSPACE }}/acceptance.xml
             ${{ env.NX_MCP_WORKSPACE }}/restart.xml
+            ${{ env.NX_MCP_WORKSPACE }}/step-check/report.json
             ${{ env.NX_MCP_WORKSPACE }}/gui-bridge-build/NxMcpGuiBridge.dll
           if-no-files-found: warn

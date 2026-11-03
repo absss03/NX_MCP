@@ -20,6 +20,8 @@ from nx_mcp.bridge import (
     MainThreadDispatcher,
     ObjectRegistry,
     default_descriptor_path,
+    descriptor_startup_lock,
+    refuse_live_descriptor,
 )
 from nx_mcp.runtime import NXToolError, ObjectKind
 from nx_mcp.workspace import Workspace, WorkspaceViolation
@@ -247,11 +249,22 @@ class NXOpenExecutor:
 
     def _status(self) -> dict[str, Any]:
         part = self._work_part(required=False)
+        units = None
+        if part is not None:
+            native_units = part.PartUnits
+            if native_units == self.nxopen.BasePart.Units.Millimeters:
+                units = "mm"
+            elif native_units == self.nxopen.BasePart.Units.Inches:
+                units = "inch"
+            else:
+                raise NXToolError("NX_UNSUPPORTED_UNITS", "Unrecognized work part units")
         return {
             "connected": True,
             "nx_version": self.nx_version,
             "bridge_protocol": BRIDGE_PROTOCOL_VERSION,
+            "bridge_implementation": "python_batch",
             "active_part": self._reference(part, "part", part, "Part") if part else None,
+            "units": units,
         }
 
     def _list_objects(self, collection_name: str, kind: ObjectKind) -> dict[str, Any]:
@@ -320,6 +333,18 @@ class NXOpenExecutor:
                 self.nxopen.BasePart.SaveComponents.FalseValue,
                 self.nxopen.BasePart.CloseAfterSave.FalseValue,
             )
+            if save_status is not None and (
+                save_status.NumberUnsavedParts or save_status.NumberUnsavedObjects
+            ):
+                raise NXToolError(
+                    "NX_API_ERROR",
+                    "The work part could not be fully saved; it remains open.",
+                    nx_code=(
+                        save_status.GetStatus(0)
+                        if save_status.NumberUnsavedParts
+                        else save_status.GetObjectStatus(0)
+                    ),
+                )
         finally:
             if save_status is not None:
                 save_status.Dispose()
@@ -583,9 +608,12 @@ class BridgeRuntime:
         self.dispatcher.stop()
         self.server.stop()
         try:
-            current = BridgeDescriptor.read(self.descriptor_path)
-            if current.token == self.descriptor.token:
-                self.descriptor_path.unlink(missing_ok=True)
+            # Serialize the token check and the delete against a replacing startup,
+            # so a bridge shutting down cannot remove its successor's descriptor.
+            with descriptor_startup_lock(self.descriptor_path):
+                current = BridgeDescriptor.read(self.descriptor_path)
+                if current.token == self.descriptor.token:
+                    self.descriptor_path.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass
 
@@ -628,32 +656,38 @@ def start_bridge(
 
     import NXOpen
 
-    session = NXOpen.Session.GetSession()
-    executor = NXOpenExecutor(
-        session,
-        NXOpen,
-        _detect_nx_version(session),
-        Workspace(workspace_root),
-        enable_experimental=os.environ.get("NX_MCP_ENABLE_EXPERIMENTAL") == "1",
-        enable_journal=os.environ.get("NX_MCP_ENABLE_JOURNAL") == "1",
-    )
-    token = secrets.token_hex(32)
-    dispatcher = MainThreadDispatcher(executor.execute)
-    server = BridgeServer(dispatcher.call, token=token)
-    server.start()
-    descriptor = BridgeDescriptor.create(
-        server.port,
-        executor.nx_version,
-        token=token,
-    )
     destination = Path(descriptor_path) if descriptor_path else default_descriptor_path()
-    try:
-        descriptor.write(destination)
-    except Exception:
-        dispatcher.stop()
-        server.stop()
-        raise
-    _runtime = BridgeRuntime(server, dispatcher, descriptor, destination)
+    # One NX process at a time may check the descriptor, bind a port and publish.
+    with descriptor_startup_lock(destination):
+        refuse_live_descriptor(destination)
+        session = NXOpen.Session.GetSession()
+        executor = NXOpenExecutor(
+            session,
+            NXOpen,
+            _detect_nx_version(session),
+            Workspace(workspace_root),
+            enable_experimental=os.environ.get("NX_MCP_ENABLE_EXPERIMENTAL") == "1",
+            enable_journal=os.environ.get("NX_MCP_ENABLE_JOURNAL") == "1",
+        )
+        token = secrets.token_hex(32)
+        dispatcher = MainThreadDispatcher(executor.execute)
+        server = BridgeServer(dispatcher.call, token=token)
+        try:
+            server.start()
+            descriptor = BridgeDescriptor.create(
+                server.port,
+                executor.nx_version,
+                token=token,
+            )
+            descriptor.write(destination)
+        except Exception:
+            # Attempt every cleanup without hiding the startup failure.
+            with suppress(Exception):
+                dispatcher.stop()
+            with suppress(Exception):
+                server.stop()
+            raise
+        _runtime = BridgeRuntime(server, dispatcher, descriptor, destination)
     return descriptor
 
 

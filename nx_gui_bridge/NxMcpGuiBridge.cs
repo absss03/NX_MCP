@@ -59,6 +59,34 @@ namespace NxMcp.GuiBridge
         public static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
     }
 
+    /// <summary>
+    /// Set built on Dictionary (mscorlib). NX's journal compiler references mscorlib but
+    /// not System.Core, where System.Collections.Generic.HashSet lives, so the source can
+    /// only run as a journal with a set of its own. It keeps the HashSet name because a
+    /// type in the enclosing namespace takes precedence over the using directive in both
+    /// builds, and because tests/test_bridge_parity.py reads the Mutations declaration by
+    /// that literal name. IEnumerable exists only for the collection initializer syntax.
+    /// </summary>
+    internal sealed class HashSet<T> : IEnumerable
+    {
+        private readonly Dictionary<T, bool> items = new Dictionary<T, bool>();
+
+        public bool Add(T value)
+        {
+            if (items.ContainsKey(value)) return false;
+            items[value] = true;
+            return true;
+        }
+
+        public bool Contains(T value) { return items.ContainsKey(value); }
+
+        public bool Remove(T value) { return items.Remove(value); }
+
+        public int Count { get { return items.Count; } }
+
+        public IEnumerator GetEnumerator() { return items.Keys.GetEnumerator(); }
+    }
+
     internal sealed class NxToolError : Exception
     {
         public readonly string Code;
@@ -1082,10 +1110,19 @@ namespace NxMcp.GuiBridge
         private Dictionary<string, object> Status(Dictionary<string, object> values)
         {
             Part part = WorkPart(false);
+            string units = null;
+            if (part != null)
+            {
+                if (part.PartUnits == BasePart.Units.Millimeters) units = "mm";
+                else if (part.PartUnits == BasePart.Units.Inches) units = "inch";
+                else throw new NxToolError("NX_UNSUPPORTED_UNITS", "Unrecognized work part units");
+            }
             return Result(
                 "connected", true,
                 "nx_version", nxVersion,
                 "bridge_protocol", Protocol.Version,
+                "bridge_implementation", "csharp_gui",
+                "units", units,
                 "active_part", part != null ? Reference(part, "part", part, "Part") : null);
         }
 
@@ -1358,6 +1395,17 @@ namespace NxMcp.GuiBridge
             try
             {
                 saveStatus = part.Save(BasePart.SaveComponents.False, BasePart.CloseAfterSave.False);
+                if (saveStatus != null &&
+                    (saveStatus.NumberUnsavedParts > 0 || saveStatus.NumberUnsavedObjects > 0))
+                {
+                    int nativeCode = saveStatus.NumberUnsavedParts > 0
+                        ? saveStatus.GetStatus(0)
+                        : saveStatus.GetObjectStatus(0);
+                    throw new NxToolError(
+                        "NX_API_ERROR",
+                        "The work part could not be fully saved; it remains open.",
+                        null, nativeCode, false, null);
+                }
             }
             finally
             {
